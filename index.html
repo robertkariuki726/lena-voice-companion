@@ -170,7 +170,7 @@
         buffer += " " + finalTxt;
         if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = null; }
         if (silenceTimer) clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(sendMessage, 1300);
+        silenceTimer = setTimeout(sendMessage, 1000);
       }
     }
   };
@@ -223,7 +223,12 @@
     if (!msg) { setState("idle"); setStatus("Say Hey Lena"); return; }
     busy = true;
     setState("thinking");
-    setStatus("Thinking ...");
+    var t0 = Date.now();
+    if (window.thinkTimer) clearInterval(window.thinkTimer);
+    window.thinkTimer = setInterval(function () {
+      setStatus("Thinking... " + Math.round((Date.now() - t0) / 1000) + "s");
+    }, 1000);
+    setStatus("Thinking...");
     say("You: " + msg);
     fetch(API, {
       method: "POST",
@@ -231,6 +236,7 @@
       body: JSON.stringify({ message: msg, conversationId: convId })
     }).then(function (r) { return r.json(); }).then(function (d) {
       busy = false;
+      if (window.thinkTimer) { clearInterval(window.thinkTimer); window.thinkTimer = null; }
       if (d.conversationId) {
         convId = d.conversationId;
         try { localStorage.setItem("lena_conversation", convId); } catch (e) {}
@@ -243,6 +249,7 @@
       }
     }).catch(function () {
       busy = false;
+      if (window.thinkTimer) { clearInterval(window.thinkTimer); window.thinkTimer = null; }
       setState("idle");
       setStatus("Connection problem. Say Hey Lena to retry.");
     });
@@ -275,6 +282,10 @@
 
   function speak(text) {
     speaking = true;
+    if (text.length > 700) {
+      var cut = text.lastIndexOf(". ", 700);
+      text = (cut > 300 ? text.slice(0, cut + 1) : text.slice(0, 700)) + " ...I can go on, just ask.";
+    }
     try { rec.stop(); } catch (e) {}
     var u = new SpeechSynthesisUtterance(text);
     var v = pickVoice();
@@ -303,6 +314,22 @@
     if (!started) { startListening(); return; }
     wakeUp();
   });
+
+  // ---------- warm up the line ----------
+  function warm() {
+    if (convId) return;
+    fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ warm: true })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.conversationId) {
+        convId = d.conversationId;
+        try { localStorage.setItem("lena_conversation", convId); } catch (e) {}
+      }
+    }).catch(function () {});
+  }
+  warm();
 
   // ---------- tiny chime ----------
   var AC = window.AudioContext || window.webkitAudioContext;
