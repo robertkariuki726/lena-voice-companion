@@ -71,7 +71,7 @@ class AgentClient:
         url = f"{self.base}/api/agents/{self.agent_id}/conversations/{cid}/messages"
 
         # Try the most likely body shapes; API docs are authoritative.
-        for payload in ({"message": text}, {"content": text}):
+        for payload in ({"content": text}, {"message": text}):
             resp = requests.post(url, headers=self.headers, json=payload, timeout=300)
             if resp.status_code < 400:
                 return self._extract_reply(resp.json())
