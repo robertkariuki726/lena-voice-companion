@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0a0e1a">
+<title>Lena</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; }
+  body {
+    background: radial-gradient(circle at 50% 30%, #131b33 0%, #0a0e1a 60%, #060810 100%);
+    color:#dfe6f5; font-family: system-ui, -apple-system, sans-serif;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; overflow:hidden; user-select:none;
+  }
+  #orb {
+    width:160px; height:160px; border-radius:50%;
+    background: radial-gradient(circle at 38% 32%, #8fb8ff 0%, #4f7cf0 45%, #233c8f 100%);
+    box-shadow: 0 0 40px 6px rgba(79,124,240,.35), inset 0 0 30px rgba(255,255,255,.25);
+    cursor:pointer; transition: transform .2s;
+    animation: pulse 3.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.05); } }
+  body.listening #orb {
+    background: radial-gradient(circle at 38% 32%, #b8ffd9 0%, #34d17d 45%, #11633c 100%);
+    box-shadow: 0 0 60px 12px rgba(52,209,125,.45), inset 0 0 30px rgba(255,255,255,.25);
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  body.thinking #orb {
+    background: radial-gradient(circle at 38% 32%, #ffe3a8 0%, #e8a63a 45%, #8a5410 100%);
+    box-shadow: 0 0 50px 8px rgba(232,166,58,.4), inset 0 0 30px rgba(255,255,255,.25);
+    animation: spin 1.4s linear infinite;
+  }
+  @keyframes spin { 50% { transform:scale(1.08) rotate(8deg); } 100% { transform:scale(1) rotate(0deg);} }
+  body.speaking #orb {
+    background: radial-gradient(circle at 38% 32%, #e8c4ff 0%, #9d5cf0 45%, #4c238f 100%);
+    box-shadow: 0 0 60px 12px rgba(157,92,240,.45), inset 0 0 30px rgba(255,255,255,.25);
+    animation: pulse 0.8s ease-in-out infinite;
+  }
+  #name { margin-top:34px; font-size:22px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:#aab9d8; }
+  #status { margin-top:10px; font-size:15px; color:#8fa0c5; min-height:22px; padding:0 24px; }
+  #last {
+    margin-top:26px; max-width:520px; width:88%; font-size:14px; line-height:1.5;
+    color:#6d7fa3; max-height:30vh; overflow-y:auto; padding:0 8px; -webkit-overflow-scrolling:touch;
+  }
+  #footer { position:fixed; bottom:58px; left:0; right:0; font-size:11.5px; color:#415070; padding:0 16px; }
+  #textbar {
+    position:fixed; bottom:0; left:0; right:0; display:flex; gap:8px;
+    padding:8px 10px; background:rgba(10,14,26,.92);
+  }
+  #textbar input {
+    flex:1; padding:11px 14px; border-radius:999px; border:1px solid #33456e;
+    background:#16203a; color:#dfe6f5; font-size:15px; outline:none;
+  }
+  #textbar button {
+    padding:11px 18px; border-radius:999px; border:none;
+    background:#4f7cf0; color:#fff; font-size:14px; font-weight:600;
+  }
+  #srbanner { display:none; margin-top:14px; font-size:13px; color:#e8a63a; padding:0 20px; line-height:1.5; }
+</style>
+</head>
+<body class="idle">
+<div id="orb"></div>
+<div id="name">Lena</div>
+<div id="status">Tap the orb, then say "Hey Lena"</div>
+<div id="last"></div>
+<div id="srbanner">Voice needs Chrome (Android or desktop). Tap the orb and just talk — or type below and I will answer out loud.</div>
+<div id="footer">Say "Hey Lena" then just talk - or simply tap the orb and talk. Tap the orb while I speak to interrupt me.</div>
+<div id="textbar">
+  <input id="typed" type="text" placeholder="Type to Lena instead..." autocomplete="off">
+  <button id="send">Send</button>
+</div>
+<script>
+(function () {
+  var API = "https://lena-81a8acf3.base44.app/functions/lenaVoice";
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var orb = document.getElementById("orb");
+  var statusEl = document.getElementById("status");
+  var lastEl = document.getElementById("last");
+  var rec = SR ? new SR() : null;
+  var started = false, wakeMode = false, speaking = false, busy = false;
+  var buffer = "", silenceTimer = null, wakeTimer = null;
+  var convId = null;
+  try { convId = localStorage.getItem("lena_conversation") || null; } catch (e) {}
+
+  function setStatus(t) { statusEl.textContent = t; }
+  function setState(s) { document.body.className = s; }
+  function say(t) { lastEl.textContent = t; }
+
+  // any crash shows on the page AND reports to Lena
+  window.onerror = function (msg) {
+    try {
+      lastEl.textContent = "Error: " + String(msg).slice(0, 160);
+      fetch(API,, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ diag: true, info: {
+          error: String(msg).slice(0, 200),
+          ua: navigator.userAgent.slice(0, 120)
+        } })
+      }).catch(function () {});
+    } catch (e) {}
+    return true;
+  };
+
+  // text bar listeners FIRST - they must never be blocked by anything below
+  var typed = document.getElementById("typed");
+  var sendBtn = document.getElementById("send");
+  function sendTyped() {
+    var v = typed.value.trim();
+    if (!v || busy) return;
+    typed.value = "";
+    buffer = v;
+    sendMessage();
+  }
+  sendBtn.addEventListener("click", sendTyped);
+  typed.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") sendTyped();
+  });
+
+  // diagnostic beacon - fully guarded, can never take the page down
+  var micState = "unknown";
+  function sendDiag() {
+    try {
+      fetch(API,, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ diag: true, info: {
+          sr: !!rec, mic: micState,
+          ua: navigator.userAgent.slice(0, 160)
+        } })
+      }).catch(function () {});
+    } catch (e) {}
+  }
+  try {
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: "microphone" }).then(function (p) {
+        micState = p.state; sendDiag();
+      }).catch(function () {});
+    }
+  } catch (e) {}
+  sendDiag();
+
+  if (!rec) {
+    document.getElementById("srbanner").style.display = "block";
+    setStatus("Voice not available in this browser - use Chrome");
+    say("You can still type below - I will reply out loud.");
+    return;
+  }
+  rec.lang = "en-US";
+  rec.continuous = true;
+  rec.interimResults = true;
+
+  // ---------- speech recognition ----------
+  rec.onresult = function (e) {
+    var i, r, finalTxt = "", interim = "";
+    for (i = e.resultIndex; i < e.results.length; i++) {
+      r = e.results[i];
+      if (r.isFinal) finalTxt += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    if (speaking || busy) return;
+    if (!wakeMode) {
+      var heard = (finalTxt + " " + interim).toLowerCase();
+      if (heard.indexOf("lena") !== -1) wakeUp();
+    } else {
+      if (interim) setStatus(interim.trim());
+      if (finalTxt) {
+        buffer += " " + finalTxt;
+        if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = null; }
+        if (silenceTimer) clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(sendMessage, 1300);
+      }
+    }
+  };
+  rec.onend = function () {
+    if (!speaking && !busy && started) {
+      setTimeout(function () { try { rec.start(); } catch (e2) {} }, 250);
+    }
+  };
+  rec.onerror = function (e) {
+    if (e.error === "not-allowed") {
+      started = false;
+      setStatus("Microphone blocked. Allow mic access and tap the orb again.");
+    }
+  };
+
+  function startListening() {
+    if (started) return;
+    started = true;
+    try { rec.start(); } catch (e) {}
+    setState("idle");
+    setStatus("Listening for: Hey Lena");
+    if (navigator.wakeLock) {
+      navigator.wakeLock.request("screen").catch(function () {});
+    }
+  }
+
+  function wakeUp() {
+    if (speaking || busy) return;
+    wakeMode = true;
+    buffer = "";
+    chime(880);
+    setState("listening");
+    setStatus("I am listening - talk to me");
+    if (silenceTimer) clearTimeout(silenceTimer);
+    if (wakeTimer) clearTimeout(wakeTimer);
+    wakeTimer = setTimeout(function () {
+      if (wakeMode && !buffer.trim()) {
+        wakeMode = false;
+        setState("idle");
+        setStatus("Say Hey Lena");
+      }
+    }, 12000);
+  }
+
+  function sendMessage() {
+    var msg = buffer.trim();
+    wakeMode = false;
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+    if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = null; }
+    if (!msg) { setState("idle"); setStatus("Say Hey Lena"); return; }
+    busy = true;
+    setState("thinking");
+    setStatus("Thinking ...");
+    say("You: " + msg);
+    fetch(API,, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ message: msg, conversationId: convId })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      busy = false;
+      if (d.conversationId) {
+        convId = d.conversationId;
+        try { localStorage.setItem("lena_conversation", convId); } catch (e) {}
+      }
+      if (d.reply) { say(d.reply); speak(d.reply); }
+      else {
+        setState("idle");
+        setStatus("Could not reach Lena. Say Hey Lena to retry.");
+        if (d.error) say(JSON.stringify(d).slice(0, 300));
+      }
+    }).catch(function () {
+      busy = false;
+      setState("idle");
+      setStatus("Connection problem. Say Hey Lena to retry.");
+    });
+  }
+
+  // ---------- speaking ----------
+  var voices = [];
+  function loadVoices() { voices = window.speechSynthesis.getVoices() || []; }
+  loadVoices();
+  if (window.speechSynthesis) speechSynthesis.onvoiceschanged = loadVoices;
+
+  function pickVoice() {
+    var prefs = ["Google UK English Female", "Google US English", "Microsoft Aria",
+      "Microsoft Zira", "Microsoft Michelle", "Samantha", "Karen"];
+    var i, j, v;
+    for (i = 0; i < prefs.length; i++) {
+      for (j = 0; j < voices.length; j++) {
+        if (voices[j].name === prefs[i]) return voices[j];
+      }
+    }
+    for (j = 0; j < voices.length; j++) {
+      v = voices[j];
+      if (/female/i.test(v.name) && /^en/i.test(v.lang)) return v;
+    }
+    for (j = 0; j < voices.length; j++) {
+      if (/^en/i.test(voices[j].lang)) return voices[j];
+    }
+    return null;
+  }
+
+  function speak(text) {
+    speaking = true;
+    try { rec.stop(); } catch (e) {}
+    var u = new SpeechSynthesisUtterance(text);
+    var v = pickVoice();
+    if (v) u.voice = v;
+    u.rate = 1.02;
+    u.pitch = 1.0;
+    var done = function () {
+      speaking = false;
+      setState("idle");
+      setStatus("Say Hey Lena");
+      setTimeout(function () { try { rec.start(); } catch (e2) {} }, 300);
+    };
+    u.onend = done;
+    u.onerror = done;
+    setState("speaking");
+    setStatus("Speaking - tap the orb to interrupt me");
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  }
+
+  // ---------- tap behaviour ----------
+  orb.addEventListener("click", function () {
+    chime(660);
+    if (speaking) { speechSynthesis.cancel(); return; }
+    if (busy) return;
+    if (!started) { startListening(); return; }
+    wakeUp();
+  });
+
+  // ---------- tiny chime ----------
+  var AC = window.AudioContext || window.webkitAudioContext;
+  var actx = AC ? new AC() : null;
+  function chime(freq) {
+    if (!actx) return;
+    try {
+      var o = actx.createOscillator(), g = actx.createGain();
+      o.frequency.value = freq; o.type = "sine";
+      g.gain.setValueAtTime(0.001, actx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.15, actx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.25);
+      o.connect(g); g.connect(actx.destination);
+      o.start(); o.stop(actx.currentTime + 0.3);
+    } catch (e) {}
+  }
+})();
+</script>
+</body>
+</html>
