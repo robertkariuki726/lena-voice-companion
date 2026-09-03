@@ -1,0 +1,11 @@
+# Lena voice companion — dependencies
+# All free. No API costs: STT runs locally, TTS uses Microsoft's free edge-tts.
+
+sounddevice>=0.4.6      # microphone capture + playback (PortAudio)
+numpy>=1.24             # audio arrays
+faster-whisper>=1.0.0   # local speech-to-text (CTranslate2 Whisper)
+edge-tts>=6.1.0         # free neural text-to-speech
+miniaudio>=1.59         # MP3 decoding without ffmpeg
+keyboard>=0.13.5        # global push-to-talk hotkey
+requests>=2.31          # calls the Base44 Agent API
+python-dotenv>=1.0.0    # loads .env
